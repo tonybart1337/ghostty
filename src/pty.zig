@@ -42,10 +42,13 @@ pub const ProcessInfo = enum {
     /// Gets the name of the slave PTY. Returned name points to an internal buffer
     /// so it should not be modified or freed.
     tty_name,
+    /// The session ID of the PTY, which is the PID of the session leader
+    /// (the child process that called setsid, usually the shell).
+    session_pid,
 
     pub fn Type(comptime info: ProcessInfo) type {
         return switch (info) {
-            .foreground_pid => u64,
+            .foreground_pid, .session_pid => u64,
             .tty_name => [:0]const u8,
         };
     }
@@ -283,6 +286,22 @@ const PosixPty = struct {
                     },
                     else => {
                         const rc = c.tcgetpgrp(self.master);
+                        if (rc < 0) return null;
+                        return @intCast(rc);
+                    },
+                }
+            },
+            .session_pid => {
+                switch (builtin.target.os.tag) {
+                    .linux => {
+                        const linux = std.os.linux;
+                        var sid: linux.pid_t = undefined;
+                        const rc = linux.ioctl(self.master, linux.T.IOCGSID, @intFromPtr(&sid));
+                        if (linux.errno(rc) != .SUCCESS) return null;
+                        return @intCast(sid);
+                    },
+                    else => {
+                        const rc = c.tcgetsid(self.master);
                         if (rc < 0) return null;
                         return @intCast(rc);
                     },
