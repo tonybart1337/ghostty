@@ -396,7 +396,7 @@ const help_skill_show =
 ;
 
 const help_skill_install =
-    \\Usage: ghostty +ctl skill install [--agent=claude|codex|all] [--dest=DIR]
+    \\Usage: ghostty +ctl skill install [--agent=claude|codex|omp|all] [--dest=DIR]
     \\
     \\Install the bundled agent skill as `<root>/ghostty-ctl/SKILL.md` (plus
     \\`agents/openai.yaml`), replacing any previous copy, and print
@@ -405,12 +405,13 @@ const help_skill_install =
     \\
     \\Flags:
     \\
-    \\  * `--agent=claude|codex|all`: Target agent (default: claude). Roots:
-    \\    `$CLAUDE_HOME/skills` (default `~/.claude/skills`, which omp also
-    \\    reads) and `$CODEX_HOME/skills` (default `~/.codex/skills`).
+    \\  * `--agent=claude|codex|omp|all`: Target agent (default: claude).
+    \\    Roots: `$CLAUDE_HOME/skills` (default `~/.claude/skills`),
+    \\    `$CODEX_HOME/skills` (default `~/.codex/skills`) and
+    \\    `~/.agents/skills` (omp's user-level skills directory).
     \\
     \\  * `--dest=<dir>`: Install root instead of the agent's skills
-    \\    directory; with `--agent=all`, `<dir>/codex` and `<dir>/claude`.
+    \\    directory; with `--agent=all`, `<dir>/<agent>` for each agent.
 ;
 
 /// A parsed command line.
