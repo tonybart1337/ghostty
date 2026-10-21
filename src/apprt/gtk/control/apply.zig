@@ -442,6 +442,8 @@ const Builder = struct {
             .title = n.title,
         });
         _ = surface.refSink();
+        // Only `focus` (applied later via a real grab) may focus it.
+        surface.startUnfocused();
 
         // Inherit font size (and cwd, if configured and no cwd was given)
         // like a split, tab or window created from the nearest surface.

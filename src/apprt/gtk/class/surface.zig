@@ -781,6 +781,14 @@ pub const Surface = extern struct {
         return priv.core_surface;
     }
 
+    /// Mark a not yet started surface as unfocused. A surface reports itself
+    /// focused when its core surface starts unless told otherwise, which
+    /// would make it its split tree's last-focused surface. Surfaces that are
+    /// created without being meant to take focus call this right after `new`.
+    pub fn startUnfocused(self: *Self) void {
+        self.private().focused = false;
+    }
+
     /// Start the core surface (and so its command) although the widget was
     /// never allocated, e.g. for a surface created in a tab that is not
     /// shown. Normally the core surface is started on the first resize.
@@ -3605,12 +3613,13 @@ pub const Surface = extern struct {
 
         // Properties that can impact surface init
         if (priv.font_size_request) |size| config.@"font-size" = size.points;
-        if (priv.pwd) |pwd| {
+        // An inherited pwd must not override an explicit working directory.
+        if (priv.overrides.working_directory == null) if (priv.pwd) |pwd| {
             const config_alloc = config.arenaAlloc();
             var wd_val: configpkg.WorkingDirectory = .{ .path = try config_alloc.dupe(u8, pwd) };
             try wd_val.finalize(config_alloc);
             config.@"working-directory" = wd_val;
-        }
+        };
 
         const content_scale = self.getContentScale();
         log.info("surface content scale: x={d} y={d} dpi={}x{} font_size={}", .{
