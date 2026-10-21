@@ -47,6 +47,7 @@ const GlobalShortcuts = @import("global_shortcuts.zig").GlobalShortcuts;
 const OpenURI = @import("../portal.zig").OpenURI;
 const media = @import("../media.zig");
 const Overrides = @import("Overrides.zig");
+const ControlServer = @import("../control/server.zig").Server;
 
 const log = std.log.scoped(.gtk_ghostty_application);
 
@@ -229,6 +230,9 @@ pub const Application = extern struct {
         saved_language: ?[:0]const u8 = null,
 
         open_uri: OpenURI = undefined,
+
+        /// The `dev.tony.Ghostty.Control` D-Bus interface registration.
+        control: ControlServer = .{},
 
         // The audio bell's MediaFile, reused across bells so we don't leak a
         // GStreamer pipeline (and its GL threads) on every ring. Built lazily
@@ -1523,6 +1527,39 @@ pub const Application = extern struct {
         );
     }
 
+    fn dbusRegister(
+        self: *Self,
+        connection: *gio.DBusConnection,
+        object_path: [*:0]const u8,
+        err: ?*?*glib.Error,
+    ) callconv(.c) c_int {
+        if (gio.Application.virtual_methods.dbus_register.call(
+            Class.parent,
+            self.as(Parent),
+            connection,
+            object_path,
+            err,
+        ) == 0) return 0;
+
+        self.private().control.register(self, connection, object_path);
+        return 1;
+    }
+
+    fn dbusUnregister(
+        self: *Self,
+        connection: *gio.DBusConnection,
+        object_path: [*:0]const u8,
+    ) callconv(.c) void {
+        self.private().control.unregister(connection);
+
+        gio.Application.virtual_methods.dbus_unregister.call(
+            Class.parent,
+            self.as(Parent),
+            connection,
+            object_path,
+        );
+    }
+
     fn dispose(self: *Self) callconv(.c) void {
         const priv = self.private();
         if (priv.config_errors_dialog.get()) |diag| {
@@ -1986,12 +2023,17 @@ pub const Application = extern struct {
             return;
         }
 
-        // Convert the u64 to a core surface by using it as a surface ID.
         // A value of zero means that there was no target surface for the
         // notification so we don't focus any surface.
-        const surface_id = parameter.getUint64();
-        if (surface_id == 0) return;
-        const surface = self.core().findSurfaceByID(surface_id) orelse return;
+        _ = self.presentSurface(parameter.getUint64());
+    }
+
+    /// Select the tab, focus the split and present the window of the
+    /// surface with the given core surface id. Returns false if no such
+    /// surface exists (zero is never a valid id).
+    pub fn presentSurface(self: *Self, surface_id: u64) bool {
+        if (surface_id == 0) return false;
+        const surface = self.core().findSurfaceByID(surface_id) orelse return false;
 
         _ = self.core().mailbox.push(
             global.io(),
@@ -2003,6 +2045,7 @@ pub const Application = extern struct {
             },
             .forever,
         );
+        return true;
     }
 
     pub fn actionRingBell(
@@ -2075,6 +2118,8 @@ pub const Application = extern struct {
             // Virtual methods
             gio.Application.virtual_methods.activate.implement(class, &activate);
             gio.Application.virtual_methods.startup.implement(class, &startup);
+            gio.Application.virtual_methods.dbus_register.implement(class, &dbusRegister);
+            gio.Application.virtual_methods.dbus_unregister.implement(class, &dbusUnregister);
             gobject.Object.virtual_methods.dispose.implement(class, &dispose);
             gobject.Object.virtual_methods.finalize.implement(class, &finalize);
         }
