@@ -31,67 +31,102 @@ parameters_builder: *glib.VariantBuilder,
 
 pub const InitError = Allocator.Error || std.Io.Writer.Error || apprt.ipc.Errors;
 
-/// Initialize the helper.
-pub fn init(alloc: Allocator, target: apprt.ipc.Target, action: [:0]const u8) InitError!Self {
+/// The bus name and object path of the Ghostty instance selected by an IPC
+/// target. For a `.class` target the object path is allocated and must be
+/// released with `deinit`.
+pub const Endpoint = struct {
+    target: apprt.ipc.Target,
+    bus_name: [:0]const u8,
+    object_path: [:0]const u8,
+
+    /// Resolve and validate the endpoint for `target`. On error.IPCFailed a
+    /// message has been written to stderr.
+    pub fn init(alloc: Allocator, target: apprt.ipc.Target) InitError!Endpoint {
+        var buf: [256]u8 = undefined;
+        var stderr_writer = std.Io.File.stderr().writer(global.io(), &buf);
+        const stderr = &stderr_writer.interface;
+
+        // Get the appropriate bus name and object path for contacting the
+        // Ghostty instance we're interested in.
+        const bus_name: [:0]const u8, const object_path: [:0]const u8 = switch (target) {
+            .class => |class| result: {
+                // Force the usage of the class specified on the CLI to determine the
+                // bus name and object path.
+                const object_path = try alloc.printSentinel("/{s}", .{class}, 0);
+
+                std.mem.replaceScalar(u8, object_path, '.', '/');
+                std.mem.replaceScalar(u8, object_path, '-', '_');
+
+                break :result .{ class, object_path };
+            },
+            .detect => .{ ApprtApp.application_id, ApprtApp.object_path },
+        };
+        const self: Endpoint = .{
+            .target = target,
+            .bus_name = bus_name,
+            .object_path = object_path,
+        };
+        errdefer self.deinit(alloc);
+
+        if (gio.Application.idIsValid(bus_name.ptr) == 0) {
+            try stderr.print("D-Bus bus name is not valid: {s}\n", .{bus_name});
+            try stderr.flush();
+            return error.IPCFailed;
+        }
+
+        if (glib.Variant.isObjectPath(object_path.ptr) == 0) {
+            try stderr.print("D-Bus object path is not valid: {s}\n", .{object_path});
+            try stderr.flush();
+            return error.IPCFailed;
+        }
+
+        return self;
+    }
+
+    pub fn deinit(self: Endpoint, alloc: Allocator) void {
+        switch (self.target) {
+            .class => alloc.free(self.object_path),
+            .detect => {},
+        }
+    }
+};
+
+/// Get a connection to the D-Bus session bus. On error.IPCFailed a message
+/// has been written to stderr. The caller owns the returned reference.
+pub fn connectSession() (std.Io.Writer.Error || apprt.ipc.Errors)!*gio.DBusConnection {
     var buf: [256]u8 = undefined;
     var stderr_writer = std.Io.File.stderr().writer(global.io(), &buf);
     const stderr = &stderr_writer.interface;
 
-    // Get the appropriate bus name and object path for contacting the
-    // Ghostty instance we're interested in.
-    const bus_name: [:0]const u8, const object_path: [:0]const u8 = switch (target) {
-        .class => |class| result: {
-            // Force the usage of the class specified on the CLI to determine the
-            // bus name and object path.
-            const object_path = try alloc.printSentinel("/{s}", .{class}, 0);
+    var err_: ?*glib.Error = null;
+    defer if (err_) |err| err.free();
 
-            std.mem.replaceScalar(u8, object_path, '.', '/');
-            std.mem.replaceScalar(u8, object_path, '-', '_');
+    const dbus_ = gio.busGetSync(.session, null, &err_);
+    if (err_) |err| {
+        try stderr.print(
+            "Unable to establish connection to D-Bus session bus: {s}\n",
+            .{err.f_message orelse "(unknown)"},
+        );
+        try stderr.flush();
+        return error.IPCFailed;
+    }
 
-            break :result .{ class, object_path };
-        },
-        .detect => .{ ApprtApp.application_id, ApprtApp.object_path },
+    return dbus_ orelse {
+        try stderr.print("gio.busGetSync returned null\n", .{});
+        try stderr.flush();
+        return error.IPCFailed;
     };
-    errdefer {
-        switch (target) {
-            .class => alloc.free(object_path),
-            .detect => {},
-        }
-    }
+}
 
-    if (gio.Application.idIsValid(bus_name.ptr) == 0) {
-        try stderr.print("D-Bus bus name is not valid: {s}\n", .{bus_name});
-        try stderr.flush();
-        return error.IPCFailed;
-    }
-
-    if (glib.Variant.isObjectPath(object_path.ptr) == 0) {
-        try stderr.print("D-Bus object path is not valid: {s}\n", .{object_path});
-        try stderr.flush();
-        return error.IPCFailed;
-    }
+/// Initialize the helper.
+pub fn init(alloc: Allocator, target: apprt.ipc.Target, action: [:0]const u8) InitError!Self {
+    const endpoint: Endpoint = try .init(alloc, target);
+    errdefer endpoint.deinit(alloc);
+    const bus_name = endpoint.bus_name;
+    const object_path = endpoint.object_path;
 
     // Get a connection to the DBus session bus.
-    const dbus = dbus: {
-        var err_: ?*glib.Error = null;
-        defer if (err_) |err| err.free();
-
-        const dbus_ = gio.busGetSync(.session, null, &err_);
-        if (err_) |err| {
-            try stderr.print(
-                "Unable to establish connection to D-Bus session bus: {s}\n",
-                .{err.f_message orelse "(unknown)"},
-            );
-            try stderr.flush();
-            return error.IPCFailed;
-        }
-
-        break :dbus dbus_ orelse {
-            try stderr.print("gio.busGetSync returned null\n", .{});
-            try stderr.flush();
-            return error.IPCFailed;
-        };
-    };
+    const dbus = try connectSession();
 
     // Set up the payload builder.
     const payload_variant_type = glib.VariantType.new("(sava{sv})");
