@@ -2019,7 +2019,8 @@ fn execCommand(
                 try args.append(alloc, "-c");
             }
 
-            try args.append(alloc, v);
+            // Like `.direct` above, copy: the config may not outlive us.
+            try args.append(alloc, try alloc.dupeSentinel(u8, v, 0));
             break :shell try args.toOwnedSlice(alloc);
         },
     };
