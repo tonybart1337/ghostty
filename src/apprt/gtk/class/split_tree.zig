@@ -415,6 +415,10 @@ pub const SplitTree = extern struct {
         target: *Surface,
         dir: Surface.Tree.Split.Direction,
     ) Allocator.Error!void {
+        // Moving a surface onto itself is a no-op. Without this guard the
+        // split below would place the surface in the tree twice.
+        if (source == target) return;
+
         const alloc = Application.default().allocator();
         const target_tree = self.getTree() orelse return;
 
@@ -604,6 +608,12 @@ pub const SplitTree = extern struct {
         // in a multi-threaded context so this is safe.
         surface.unref();
         return surface;
+    }
+
+    /// Set the surface that becomes focused (and active) when the tree
+    /// is next rebuilt. The surface should be part of the tree.
+    pub fn setLastFocused(self: *Self, surface: ?*Surface) void {
+        self.private().last_focused.set(surface);
     }
 
     pub fn getHasSurfaces(self: *Self) bool {

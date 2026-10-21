@@ -291,6 +291,11 @@ pub const Window = extern struct {
         /// setup by `setup-menu`.
         context_menu_page: ?*adw.TabPage = null,
 
+        /// While set, the window stays open when its last tab goes away.
+        /// Used while a layout is applied so a window being refilled is
+        /// not closed midway. See holdClose/releaseClose.
+        close_hold: bool = false,
+
         /// The manually overridden title.
         title_override: ?[:0]const u8 = null,
 
@@ -494,8 +499,15 @@ pub const Window = extern struct {
         };
 
         // Add the page and select it
-        const page = tab_view.insert(tab.as(gtk.Widget), position);
+        const page = self.insertTab(tab, position);
         tab_view.setSelectedPage(page);
+        return page;
+    }
+
+    /// Insert an already constructed tab at the given position without
+    /// selecting it and bind the page's title and tooltip to the tab.
+    pub fn insertTab(self: *Self, tab: *Tab, position: c_int) *adw.TabPage {
+        const page = self.private().tab_view.insert(tab.as(gtk.Widget), position);
 
         // Create some property bindings
         _ = tab.as(gobject.Object).bindProperty(
@@ -512,6 +524,35 @@ pub const Window = extern struct {
         );
 
         return page;
+    }
+
+    /// Keep the window open even if its last tab goes away until
+    /// releaseClose is called.
+    pub fn holdClose(self: *Self) void {
+        self.private().close_hold = true;
+    }
+
+    /// Undo holdClose. Closes the window if it has no tabs left.
+    pub fn releaseClose(self: *Self) void {
+        const priv = self.private();
+        if (!priv.close_hold) return;
+        priv.close_hold = false;
+        if (priv.tab_view.getNPages() == 0) self.as(gtk.Window).close();
+    }
+
+    /// (Re)connect the window's handlers to every surface of every tab.
+    /// Needed after surfaces were moved between trees in an order where
+    /// a tree change in this window disconnected a surface that another
+    /// tab of this window had already adopted.
+    pub fn syncSurfaceHandlers(self: *Self) void {
+        const tab_view = self.private().tab_view;
+        const n = tab_view.getNPages();
+        var i: c_int = 0;
+        while (i < n) : (i += 1) {
+            const child = tab_view.getNthPage(i).getChild();
+            const tab = gobject.ext.cast(Tab, child) orelse continue;
+            if (tab.getSurfaceTree()) |tree| self.connectSurfaceHandlers(tree);
+        }
     }
 
     pub const SelectTab = union(enum) {
@@ -1853,6 +1894,9 @@ pub const Window = extern struct {
             // issue where dragging out the last tab in the tab overview
             // won't cause Ghostty to exit.
             if (priv.tab_overview.getOpen() != 0) return;
+
+            // A layout change is refilling this window; see holdClose.
+            if (priv.close_hold) return;
 
             self.as(gtk.Window).close();
         }

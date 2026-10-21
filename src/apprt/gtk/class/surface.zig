@@ -781,6 +781,20 @@ pub const Surface = extern struct {
         return priv.core_surface;
     }
 
+    /// Start the core surface (and so its command) although the widget was
+    /// never allocated, e.g. for a surface created in a tab that is not
+    /// shown. Normally the core surface is started on the first resize.
+    /// `size` is the expected size in device pixels; the real size follows
+    /// when the widget is first allocated. Does nothing if already started.
+    pub fn startHidden(self: *Self, size: apprt.SurfaceSize) void {
+        const priv = self.private();
+        if (priv.core_surface != null) return;
+        priv.size = size;
+        self.initSurface() catch |err| {
+            log.warn("surface failed to initialize err={}", .{err});
+        };
+    }
+
     pub fn rt(self: *Self) *ApprtSurface {
         const priv = self.private();
         return &priv.rt_surface;
