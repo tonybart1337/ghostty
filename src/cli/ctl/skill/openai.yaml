@@ -1,0 +1,3 @@
+name: ghostty-ctl
+description: Inspect or rearrange Ghostty windows, tabs and splits (move/swap/group terminals, new tabs with commands, focus a session) via `ghostty +ctl` on Tony's Ghostty fork.
+version: 0.1.0
