@@ -477,6 +477,29 @@ pub const SplitTree = extern struct {
         }
     }
 
+    /// Swap the currently focused surface with its spatial neighbour in
+    /// the given direction (no wrapping). The surfaces are re-parented, not
+    /// recreated, and focus stays on the moved surface. Returns true if
+    /// a swap happened, false if there is no neighbour in that direction.
+    pub fn swapActive(
+        self: *Self,
+        dir: Surface.Tree.Spatial.Direction,
+    ) Allocator.Error!bool {
+        const alloc = Application.default().allocator();
+        const tree = self.getTree() orelse return false;
+        const active = self.getActiveSurfaceHandle() orelse return false;
+        const target = try tree.neighbor(alloc, active, dir) orelse return false;
+
+        // Keep focus on the moved surface across the rebuild.
+        const surface = tree.nodes[active.idx()].leaf;
+        self.private().last_focused.set(surface);
+
+        var swapped = try tree.swap(alloc, active, target);
+        defer swapped.deinit();
+        self.setTree(&swapped);
+        return true;
+    }
+
     fn disconnectSurfaceHandlers(self: *Self) void {
         const tree = self.getTree() orelse return;
         var it = tree.iterator();
