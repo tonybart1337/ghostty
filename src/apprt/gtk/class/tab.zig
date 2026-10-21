@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = @import("../../../quirks.zig").inlineAssert;
 const adw = @import("adw");
 const gio = @import("gio");
 const glib = @import("glib");
@@ -189,6 +190,37 @@ pub const Tab = extern struct {
     }
 
     pub fn new(config: ?*Config, overrides: Overrides) *Self {
+        const tab = newEmpty(config);
+
+        // Create our initial surface in the split tree.
+        tab.private().split_tree.newSplit(.right, null, .{
+            .command = overrides.command,
+            .shell_integration = overrides.shell_integration,
+            .working_directory = overrides.working_directory,
+            .title = overrides.title,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => {
+                // TODO: We should make our "no surfaces" state more aesthetically
+                // pleasing and show something like an "Oops, something went wrong"
+                // message. For now, this is incredibly unlikely.
+                @panic("oom");
+            },
+        };
+
+        return tab;
+    }
+
+    /// Create a tab showing the given (non-empty) tree of surfaces instead
+    /// of spawning a new surface. The surfaces may currently live in other
+    /// trees; the caller is responsible for removing them from there.
+    pub fn newWithTree(config: ?*Config, tree: *const Surface.Tree) *Self {
+        assert(!tree.isEmpty());
+        const tab = newEmpty(config);
+        tab.private().split_tree.setTree(tree);
+        return tab;
+    }
+
+    fn newEmpty(config: ?*Config) *Self {
         const tab = gobject.ext.newInstance(Tab, .{});
 
         const priv: *Private = tab.private();
@@ -203,22 +235,6 @@ pub const Tab = extern struct {
         }
 
         tab.as(gobject.Object).notifyByPspec(properties.config.impl.param_spec);
-
-        // Create our initial surface in the split tree.
-        priv.split_tree.newSplit(.right, null, .{
-            .command = overrides.command,
-            .shell_integration = overrides.shell_integration,
-            .working_directory = overrides.working_directory,
-            .title = overrides.title,
-        }) catch |err| switch (err) {
-            error.OutOfMemory => {
-                // TODO: We should make our "no surfaces" state more aesthetically
-                // pleasing and show something like an "Oops, something went wrong"
-                // message. For now, this is incredibly unlikely.
-                @panic("oom");
-            },
-        };
-
         return tab;
     }
 
