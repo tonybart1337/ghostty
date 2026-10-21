@@ -527,6 +527,29 @@ fn actionCommands(action: Action.Key) []const Command {
             },
         },
 
+        .move_split => comptime &.{
+            .{
+                .action = .{ .move_split = .left },
+                .title = i18n.N_("Move Split: Left"),
+                .description = i18n.N_("Swap the current split with the split to the left, if it exists."),
+            },
+            .{
+                .action = .{ .move_split = .right },
+                .title = i18n.N_("Move Split: Right"),
+                .description = i18n.N_("Swap the current split with the split to the right, if it exists."),
+            },
+            .{
+                .action = .{ .move_split = .up },
+                .title = i18n.N_("Move Split: Up"),
+                .description = i18n.N_("Swap the current split with the split above, if it exists."),
+            },
+            .{
+                .action = .{ .move_split = .down },
+                .title = i18n.N_("Move Split: Down"),
+                .description = i18n.N_("Swap the current split with the split below, if it exists."),
+            },
+        },
+
         .goto_window => comptime &.{
             .{
                 .action = .{ .goto_window = .previous },

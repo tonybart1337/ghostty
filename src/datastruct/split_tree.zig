@@ -490,6 +490,50 @@ pub fn SplitTree(comptime V: type) type {
             );
         }
 
+        /// Returns the nearest view in the given spatial direction from
+        /// `from`, using the same neighbour logic as spatial `goto` but
+        /// without wrapping. Returns null if there is no view in that
+        /// direction.
+        pub fn neighbor(
+            self: *const Self,
+            alloc: Allocator,
+            from: Node.Handle,
+            direction: Spatial.Direction,
+        ) Allocator.Error!?Node.Handle {
+            var sp = try self.spatial(alloc);
+            defer sp.deinit(alloc);
+            return self.nearest(sp, from, direction, sp.slots[from.idx()]);
+        }
+
+        /// Swap the views at two leaf handles, returning a new tree. Both
+        /// handles MUST be leaves (asserted). The tree structure and all
+        /// split ratios are unchanged; only the views trade places. If one
+        /// of the swapped views is zoomed, the zoom follows that view to
+        /// its new position.
+        pub fn swap(
+            self: *const Self,
+            gpa: Allocator,
+            a: Node.Handle,
+            b: Node.Handle,
+        ) Allocator.Error!Self {
+            var result = try self.clone(gpa);
+            const view_a = result.nodes[a.idx()].leaf;
+            const view_b = result.nodes[b.idx()].leaf;
+
+            // See resizeInPlace: we own this freshly cloned memory. The
+            // reference counts are unchanged since each view still occupies
+            // exactly one node.
+            const nodes: []Node = @constCast(result.nodes);
+            nodes[a.idx()] = .{ .leaf = view_b };
+            nodes[b.idx()] = .{ .leaf = view_a };
+
+            if (result.zoomed) |z| {
+                if (z == a) result.zoomed = b else if (z == b) result.zoomed = a;
+            }
+
+            return result;
+        }
+
         /// Resize the given node in place. The node MUST be a split (asserted).
         ///
         /// In general, this is an immutable data structure so this is
@@ -2103,6 +2147,76 @@ test "SplitTree: spatial goto" {
             \\
         );
     }
+}
+
+fn testLocate(t: *const TestTree, label: []const u8) !TestTree.Node.Handle {
+    var it = t.iterator();
+    while (it.next()) |entry| {
+        if (std.mem.eql(u8, entry.view.label, label)) return entry.handle;
+    }
+    return error.NotFound;
+}
+
+test "SplitTree: neighbor and swap" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var v1: TestTree.View = .{ .label = "A" };
+    var t1: TestTree = try .init(alloc, &v1);
+    defer t1.deinit();
+    var v2: TestTree.View = .{ .label = "B" };
+    var t2: TestTree = try .init(alloc, &v2);
+    defer t2.deinit();
+    var v3: TestTree.View = .{ .label = "C" };
+    var t3: TestTree = try .init(alloc, &v3);
+    defer t3.deinit();
+
+    // A | B, then A over C with ratio 0.8
+    var splitAB = try t1.split(alloc, .root, .right, 0.3, &t2);
+    defer splitAB.deinit();
+    var split = try splitAB.split(alloc, try testLocate(&splitAB, "A"), .down, 0.8, &t3);
+    defer split.deinit();
+
+    const a = try testLocate(&split, "A");
+    const b = try testLocate(&split, "B");
+    const c = try testLocate(&split, "C");
+
+    // Neighbours do not wrap.
+    try testing.expectEqual(b, (try split.neighbor(alloc, a, .right)).?);
+    try testing.expectEqual(c, (try split.neighbor(alloc, a, .down)).?);
+    try testing.expect((try split.neighbor(alloc, a, .left)) == null);
+    try testing.expect((try split.neighbor(alloc, a, .up)) == null);
+    try testing.expect((try split.neighbor(alloc, b, .right)) == null);
+
+    // Zoom A then swap A and B: zoom follows A.
+    split.zoom(a);
+    var swapped = try split.swap(alloc, a, b);
+    defer swapped.deinit();
+    try testing.expectEqualStrings("B", swapped.nodes[a.idx()].leaf.label);
+    try testing.expectEqualStrings("A", swapped.nodes[b.idx()].leaf.label);
+    try testing.expectEqual(b, swapped.zoomed.?);
+    // Original untouched.
+    try testing.expectEqualStrings("A", split.nodes[a.idx()].leaf.label);
+    try testing.expectEqual(a, split.zoomed.?);
+
+    // Ratios and structure preserved.
+    try testing.expectEqual(split.nodes.len, swapped.nodes.len);
+    for (split.nodes, swapped.nodes) |old, new| switch (old) {
+        .split => |s| {
+            try testing.expectEqual(s.ratio, new.split.ratio);
+            try testing.expectEqual(s.layout, new.split.layout);
+        },
+        .leaf => {},
+    };
+
+    // Swap C (bottom-left) and B (right) without zoom.
+    split.zoom(null);
+    var swapped2 = try split.swap(alloc, c, b);
+    defer swapped2.deinit();
+    try testing.expect(swapped2.zoomed == null);
+    try testing.expectEqualStrings("A", swapped2.nodes[a.idx()].leaf.label);
+    try testing.expectEqualStrings("B", swapped2.nodes[c.idx()].leaf.label);
+    try testing.expectEqualStrings("C", swapped2.nodes[b.idx()].leaf.label);
 }
 
 test "SplitTree: resize" {
