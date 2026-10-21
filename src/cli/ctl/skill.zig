@@ -10,7 +10,7 @@ pub const name = "ghostty-ctl";
 pub const skill_md = @embedFile("skill/SKILL.md");
 pub const openai_yaml = @embedFile("skill/openai.yaml");
 
-pub const Agent = enum { claude, codex, all };
+pub const Agent = enum { claude, codex, omp, all };
 
 pub const Root = struct {
     agent: []const u8,
@@ -24,9 +24,10 @@ pub const Installed = struct {
 };
 
 /// Where to install for `agent`. `dest` overrides the agents' skills
-/// directories (`all` then installs into `dest/codex` and `dest/claude`).
-/// Defaults: `$CLAUDE_HOME/skills` (else `~/.claude/skills`) and
-/// `$CODEX_HOME/skills` (else `~/.codex/skills`).
+/// directories (`all` then installs into `dest/<agent>`). Defaults:
+/// `$CLAUDE_HOME/skills` (else `~/.claude/skills`), `$CODEX_HOME/skills`
+/// (else `~/.codex/skills`) and `~/.agents/skills` (omp's user-level skills
+/// directory; omp ignores `~/.claude/skills` unless configured to read it).
 pub fn roots(
     alloc: Allocator,
     env: *const std.process.Environ.Map,
@@ -50,17 +51,21 @@ pub fn roots(
     if (dest) |d| return switch (agent) {
         .claude => try alloc.dupe(Root, &.{.{ .agent = "claude", .path = d }}),
         .codex => try alloc.dupe(Root, &.{.{ .agent = "codex", .path = d }}),
+        .omp => try alloc.dupe(Root, &.{.{ .agent = "omp", .path = d }}),
         .all => try alloc.dupe(Root, &.{
             .{ .agent = "codex", .path = try std.fs.path.join(alloc, &.{ d, "codex" }) },
             .{ .agent = "claude", .path = try std.fs.path.join(alloc, &.{ d, "claude" }) },
+            .{ .agent = "omp", .path = try std.fs.path.join(alloc, &.{ d, "omp" }) },
         }),
     };
     const claude: Root = .{ .agent = "claude", .path = try pick(alloc, env, home, "CLAUDE_HOME", ".claude") };
     const codex: Root = .{ .agent = "codex", .path = try pick(alloc, env, home, "CODEX_HOME", ".codex") };
+    const omp: Root = .{ .agent = "omp", .path = try std.fs.path.join(alloc, &.{ home, ".agents", "skills" }) };
     return switch (agent) {
         .claude => try alloc.dupe(Root, &.{claude}),
         .codex => try alloc.dupe(Root, &.{codex}),
-        .all => try alloc.dupe(Root, &.{ codex, claude }),
+        .omp => try alloc.dupe(Root, &.{omp}),
+        .all => try alloc.dupe(Root, &.{ codex, claude, omp }),
     };
 }
 
@@ -96,11 +101,13 @@ test "skill: roots honour CLAUDE_HOME/CODEX_HOME, home fallback and dest" {
     try env.put("CODEX_HOME", "/cx");
 
     const all = try roots(a, &env, "/home/u", .all, null);
-    try testing.expectEqual(2, all.len);
+    try testing.expectEqual(3, all.len);
     try testing.expectEqualStrings("codex", all[0].agent);
     try testing.expectEqualStrings("/cx/skills", all[0].path);
     try testing.expectEqualStrings("claude", all[1].agent);
     try testing.expectEqualStrings("/home/u/.claude/skills", all[1].path);
+    try testing.expectEqualStrings("omp", all[2].agent);
+    try testing.expectEqualStrings("/home/u/.agents/skills", all[2].path);
 
     const one = try roots(a, &env, "/home/u", .claude, "/d");
     try testing.expectEqual(1, one.len);
@@ -109,6 +116,7 @@ test "skill: roots honour CLAUDE_HOME/CODEX_HOME, home fallback and dest" {
     const both = try roots(a, &env, "/home/u", .all, "/d");
     try testing.expectEqualStrings("/d/codex", both[0].path);
     try testing.expectEqualStrings("/d/claude", both[1].path);
+    try testing.expectEqualStrings("/d/omp", both[2].path);
 }
 
 test "skill: install writes both files and replaces a previous copy" {
