@@ -13,6 +13,7 @@ test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("gtk/class/tab_color_dialog.zig");
     _ = @import("gtk/control/spec.zig");
+    _ = @import("gtk/control/server.zig");
     _ = @import("gtk/desktop_notifications.zig");
     _ = @import("gtk/ext.zig");
     _ = @import("gtk/gsettings.zig");
