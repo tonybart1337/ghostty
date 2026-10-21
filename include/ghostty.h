@@ -641,6 +641,14 @@ typedef enum {
   GHOSTTY_GOTO_SPLIT_RIGHT,
 } ghostty_action_goto_split_e;
 
+// apprt.action.MoveSplit
+typedef enum {
+  GHOSTTY_MOVE_SPLIT_UP,
+  GHOSTTY_MOVE_SPLIT_LEFT,
+  GHOSTTY_MOVE_SPLIT_DOWN,
+  GHOSTTY_MOVE_SPLIT_RIGHT,
+} ghostty_action_move_split_e;
+
 // apprt.action.GotoWindow
 typedef enum {
   GHOSTTY_GOTO_WINDOW_PREVIOUS,
@@ -1041,6 +1049,7 @@ typedef enum {
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
   GHOSTTY_ACTION_RESIZE_WINDOW,
   GHOSTTY_ACTION_SET_WINDOW_THEME,
+  GHOSTTY_ACTION_MOVE_SPLIT,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1086,6 +1095,7 @@ typedef union {
   ghostty_action_readonly_e readonly;
   ghostty_action_open_config_e open_config;
   ghostty_action_window_theme_e set_window_theme;
+  ghostty_action_move_split_e move_split;
 } ghostty_action_u;
 
 typedef struct {
