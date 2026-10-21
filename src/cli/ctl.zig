@@ -5,8 +5,10 @@ const apprt = @import("../apprt.zig");
 const args = @import("args.zig");
 const global = @import("../global.zig");
 const xdg = @import("../os/xdg.zig");
+const homedir = @import("../os/homedir.zig");
 const edit = @import("ctl/edit.zig");
 const UndoStore = @import("ctl/UndoStore.zig");
+const skill = @import("ctl/skill.zig");
 
 /// The D-Bus client; only GTK builds can talk to a running Ghostty.
 const Client = if (apprt.runtime == apprt.gtk)
@@ -48,6 +50,12 @@ pub const Options = struct {
     /// `ratio`: the new share of the left/top side, in (0, 1).
     value: ?f64 = null,
 
+    /// `skill install`: target agent.
+    agent: ?skill.Agent = null,
+
+    /// `skill install`: install root instead of the agent's skills dir.
+    dest: ?[]const u8 = null,
+
     pub fn deinit(self: *Options) void {
         self.* = undefined;
     }
@@ -84,6 +92,9 @@ pub const Options = struct {
 ///
 ///   * `ratio [ID] --layout=horizontal|vertical --value=R`: resize the
 ///     nearest enclosing split of that direction.
+///
+///   * `skill show|install`: print or install the agent skill describing
+///     this command (for omp, Claude Code, Codex).
 ///
 /// Surface IDs are hex strings such as `0x0123456789abcdef`, the value of
 /// `$GHOSTTY_SURFACE_ID` in every Ghostty shell. Surface arguments shown as
@@ -144,6 +155,8 @@ const Command = enum {
     swap,
     to_tab,
     ratio,
+    skill_show,
+    skill_install,
 
     fn name(self: Command) []const u8 {
         return switch (self) {
@@ -155,6 +168,8 @@ const Command = enum {
             .swap => "swap",
             .to_tab => "to-tab",
             .ratio => "ratio",
+            .skill_show => "skill show",
+            .skill_install => "skill install",
         };
     }
 
@@ -169,12 +184,14 @@ const Command = enum {
             .swap => &.{ "pretty", "dry-run" },
             .to_tab => &.{ "pretty", "dry-run", "window", "new-window", "position" },
             .ratio => &.{ "pretty", "dry-run", "layout", "value" },
+            .skill_show => &.{},
+            .skill_install => &.{ "agent", "dest" },
         };
     }
 
     fn maxPositionals(self: Command) usize {
         return switch (self) {
-            .layout_get, .layout_undo => 0,
+            .layout_get, .layout_undo, .skill_show, .skill_install => 0,
             .layout_apply, .focus, .move, .to_tab, .ratio => 1,
             .swap => 2,
         };
@@ -190,6 +207,8 @@ const Command = enum {
             .swap => help_swap,
             .to_tab => help_to_tab,
             .ratio => help_ratio,
+            .skill_show => help_skill_show,
+            .skill_install => help_skill_install,
         };
     }
 };
@@ -359,6 +378,41 @@ const help_ratio =
     \\  * `--value=<ratio>`: The new ratio (required).
 ++ change_flags ++ common_flags;
 
+const help_skill =
+    \\Usage: ghostty +ctl skill show|install [flags]
+    \\
+    \\  * `show`: print the bundled agent skill (SKILL.md).
+    \\  * `install`: install it into an agent's skills directory.
+    \\
+    \\Run `ghostty +ctl skill <command> --help` for details.
+;
+
+const help_skill_show =
+    \\Usage: ghostty +ctl skill show
+    \\
+    \\Print the bundled agent skill (SKILL.md) that teaches coding agents how
+    \\to inspect and rearrange Ghostty with `ghostty +ctl`, so an agent can
+    \\read it without installing it.
+;
+
+const help_skill_install =
+    \\Usage: ghostty +ctl skill install [--agent=claude|codex|all] [--dest=DIR]
+    \\
+    \\Install the bundled agent skill as `<root>/ghostty-ctl/SKILL.md` (plus
+    \\`agents/openai.yaml`), replacing any previous copy, and print
+    \\`{"installed":[{"agent":"claude","path":"…"}]}`. Does not need a
+    \\running Ghostty.
+    \\
+    \\Flags:
+    \\
+    \\  * `--agent=claude|codex|all`: Target agent (default: claude). Roots:
+    \\    `$CLAUDE_HOME/skills` (default `~/.claude/skills`, which omp also
+    \\    reads) and `$CODEX_HOME/skills` (default `~/.codex/skills`).
+    \\
+    \\  * `--dest=<dir>`: Install root instead of the agent's skills
+    \\    directory; with `--agent=all`, `<dir>/codex` and `<dir>/claude`.
+;
+
 /// A parsed command line.
 const Invocation = struct {
     command: Command,
@@ -456,6 +510,18 @@ fn parseArgs(alloc: Allocator, argv: []const []const u8, stderr: *std.Io.Writer)
         if (std.mem.eql(u8, sub, "undo")) break :cmd .layout_undo;
         try stderr.print("error: unknown layout command: {s}\n", .{sub});
         return .usage;
+    } else if (std.mem.eql(u8, pos[0], "skill")) cmd: {
+        if (rest.len == 0) {
+            if (want_help) return .{ .help = help_skill };
+            try stderr.writeAll("error: missing skill command (show or install)\n");
+            return .usage;
+        }
+        const sub = rest[0];
+        rest = rest[1..];
+        if (std.mem.eql(u8, sub, "show")) break :cmd .skill_show;
+        if (std.mem.eql(u8, sub, "install")) break :cmd .skill_install;
+        try stderr.print("error: unknown skill command: {s}\n", .{sub});
+        return .usage;
     } else if (std.mem.eql(u8, pos[0], "focus"))
         .focus
     else if (std.mem.eql(u8, pos[0], "move"))
@@ -537,6 +603,16 @@ fn runArgs(
         .usage => return 2,
     };
 
+    // Local commands: no running Ghostty needed.
+    switch (inv.command) {
+        .skill_show => {
+            try stdout.writeAll(skill.skill_md);
+            return 0;
+        },
+        .skill_install => return skillInstall(alloc, inv.opts, stdout, stderr),
+        else => {},
+    }
+
     if (comptime Client == void) {
         try stderr.writeAll("+ctl is only supported on GTK.\n");
         return 1;
@@ -562,6 +638,30 @@ fn runArgs(
             },
         };
     }
+}
+
+fn skillInstall(
+    alloc: Allocator,
+    opts: Options,
+    stdout: *std.Io.Writer,
+    stderr: *std.Io.Writer,
+) !u8 {
+    const io = global.io();
+    var env = try global.environMap();
+    defer env.deinit();
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = (try homedir.home(io, &env, &home_buf)) orelse {
+        try stderr.writeAll("error: unable to determine the home directory\n");
+        return 1;
+    };
+    const rs = try skill.roots(alloc, &env, home, opts.agent orelse .claude, opts.dest);
+    const installed = skill.install(io, alloc, rs) catch |err| {
+        try stderr.print("error: unable to install the skill: {t}\n", .{err});
+        return 1;
+    };
+    try std.json.Stringify.value(.{ .installed = installed }, .{}, stdout);
+    try stdout.writeAll("\n");
+    return 0;
 }
 
 /// Errors from the client have already been reported on stderr.
@@ -608,6 +708,8 @@ const Ctx = struct {
             },
 
             .move, .swap, .to_tab, .ratio => return self.editLayout(),
+            // Handled in runArgs before connecting.
+            .skill_show, .skill_install => unreachable,
         }
     }
 
@@ -798,6 +900,7 @@ fn optionsJson(alloc: Allocator, allow_close: bool, dry_run: bool) Allocator.Err
 test {
     _ = edit;
     _ = UndoStore;
+    _ = skill;
 }
 
 fn testParse(alloc: Allocator, line: []const []const u8) !ParseResult {
@@ -835,6 +938,14 @@ test "ctl: parse commands" {
         try testing.expectEqual(@as(u32, 3), r.opts.window.?);
         try testing.expectEqual(@as(usize, 0), r.opts.position.?);
     }
+    {
+        const r = (try testParse(alloc, &.{ "skill", "install", "--agent=all", "--dest", "/d" })).run;
+        try testing.expectEqual(Command.skill_install, r.command);
+        try testing.expectEqual(skill.Agent.all, r.opts.agent.?);
+        try testing.expectEqualStrings("/d", r.opts.dest.?);
+    }
+    try testing.expect((try testParse(alloc, &.{ "skill", "show", "--agent=all" })) == .usage);
+    try testing.expect((try testParse(alloc, &.{ "focus", "--dest=/d" })) == .usage);
 }
 
 test "ctl: parse help and usage errors" {
