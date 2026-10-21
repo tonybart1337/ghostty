@@ -364,6 +364,11 @@ pub const Action = union(Key) {
     /// split or the window is fullscreen.
     resize_window: ResizeWindow,
 
+    /// Swap the target split with its spatial neighbour in the given
+    /// direction. Focus stays on the moved split. Must be a no-op
+    /// (returning false) if there is no neighbour in that direction.
+    move_split: MoveSplit,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -436,6 +441,7 @@ pub const Action = union(Key) {
         copy_title_to_clipboard,
         move_tab_to_new_window,
         resize_window,
+        move_split,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -565,6 +571,19 @@ pub const ResizeSplit = extern struct {
             try lib.checkGhosttyHEnum(Direction, "GHOSTTY_RESIZE_SPLIT_");
         }
     };
+};
+
+// This is made extern (c_int) to make interop easier with our embedded
+// runtime. The small size cost doesn't make a difference in our union.
+pub const MoveSplit = enum(c_int) {
+    up,
+    left,
+    down,
+    right,
+
+    test "ghostty.h MoveSplit" {
+        try lib.checkGhosttyHEnum(MoveSplit, "GHOSTTY_MOVE_SPLIT_");
+    }
 };
 
 pub const MoveTab = extern struct {

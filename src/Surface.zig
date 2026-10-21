@@ -5526,6 +5526,17 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             },
         ),
 
+        .move_split => |direction| return try self.rt_app.performAction(
+            .{ .surface = self },
+            .move_split,
+            switch (direction) {
+                inline else => |tag| @field(
+                    apprt.action.MoveSplit,
+                    @tagName(tag),
+                ),
+            },
+        ),
+
         .resize_split => |value| return try self.rt_app.performAction(
             .{ .surface = self },
             .resize_split,

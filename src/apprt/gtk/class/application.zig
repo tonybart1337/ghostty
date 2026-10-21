@@ -766,6 +766,8 @@ pub const Application = extern struct {
 
             .render => Action.render(target),
 
+            .move_split => return Action.moveSplit(target, value),
+
             .resize_split => return Action.resizeSplit(target, value),
 
             .resize_window => return Action.resizeWindow(target, value),
@@ -2310,6 +2312,35 @@ const Action = struct {
                     .left => .{ .spatial = .left },
                     .right => .{ .spatial = .right },
                 });
+            },
+        }
+    }
+
+    pub fn moveSplit(
+        target: apprt.Target,
+        to: apprt.action.MoveSplit,
+    ) bool {
+        switch (target) {
+            .app => return false,
+            .surface => |core| {
+                const surface = core.rt_surface.surface;
+                const tree = ext.getAncestor(
+                    SplitTree,
+                    surface.as(gtk.Widget),
+                ) orelse {
+                    log.warn("surface is not in a split tree, ignoring move_split", .{});
+                    return false;
+                };
+
+                return tree.swapActive(switch (to) {
+                    .up => .up,
+                    .down => .down,
+                    .left => .left,
+                    .right => .right,
+                }) catch |err| {
+                    log.warn("unable to move split err={}", .{err});
+                    return false;
+                };
             },
         }
     }

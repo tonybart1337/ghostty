@@ -650,6 +650,17 @@ pub const Action = union(enum) {
     /// (`previous` and `next`).
     goto_split: SplitFocusDirection,
 
+    /// Move the focused split by swapping it with its neighbour in the
+    /// specified direction (`right`, `down`, `left` and `up`), using the
+    /// same neighbour logic as `goto_split`. The running terminals are kept
+    /// as-is (only their positions change) and focus stays on the moved
+    /// split. Does nothing if there is no split in that direction; it does
+    /// not wrap around.
+    ///
+    /// For example, `move_split:left` with the focused split on the right
+    /// side of a left/right split swaps the two splits.
+    move_split: SplitMoveDirection,
+
     /// Focus on either the previous window or the next one ('previous', 'next')
     goto_window: GotoWindow,
 
@@ -1107,6 +1118,13 @@ pub const Action = union(enum) {
         right,
     };
 
+    pub const SplitMoveDirection = enum {
+        up,
+        down,
+        left,
+        right,
+    };
+
     pub const GotoWindow = enum {
         previous,
         next,
@@ -1453,6 +1471,7 @@ pub const Action = union(enum) {
             .toggle_tab_overview,
             .new_split,
             .goto_split,
+            .move_split,
             .goto_window,
             .toggle_split_zoom,
             .toggle_readonly,
