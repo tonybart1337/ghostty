@@ -11,6 +11,8 @@ pub const post_fork = @import("gtk/post_fork.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = @import("gtk/control/layout.zig");
+    _ = @import("gtk/control/procinfo.zig");
     _ = @import("gtk/control/spec.zig");
     _ = @import("gtk/control/server.zig");
     _ = @import("gtk/desktop_notifications.zig");
