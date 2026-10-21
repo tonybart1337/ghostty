@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+# ghostty-fork: keep a locally built Ghostty = latest upstream main + this fork's patches
+# (control API, `+ctl`, move_split). Installed as `~/.local/bin/ghostty`.
+#
+#   ghostty-fork update    rebase the patch branch onto upstream main, test, build, install
+#   ghostty-fork install   rebuild and install the branch as it is (no fetch, no rebase);
+#                          --dirty also builds uncommitted changes (for trying edits)
+#   ghostty-fork status    installed build, patch series, running Ghostty processes
+#   ghostty-fork rollback  switch back to the previous installed build
+#   ghostty-fork setup     install this script, the desktop integration and the timer
+#   ghostty-fork resolve REF  (internal) run the conflict-resolving agent for REF
+#
+# Builds go to ~/.local/lib/ghostty-fork/<version>-<sha>/ (a `zig build -p` prefix);
+# `current` points at the active one and ~/.local/bin/ghostty at current/bin/ghostty.
+# The desktop entry, D-Bus service, systemd unit, icons and completions use those
+# stable paths, so an install is a symlink flip: relaunching Ghostty runs the new build,
+# open windows keep theirs until closed.
+#
+# The rebase runs on a detached HEAD; the branch only moves after the new build passed
+# its tests and is installed. Any failure leaves the installed build and the branch
+# untouched and sends a notification. A rebase conflict starts an agent (once per
+# upstream commit) in the transient unit ghostty-fork-resolve to redo the rebase by
+# hand and finish with `ghostty-fork update`.
+set -euo pipefail
+
+REPO="${GHOSTTY_FORK_REPO:-$HOME/projects/home/ghostty}"
+BRANCH="${GHOSTTY_FORK_BRANCH:-tony/control-api}"
+UPSTREAM="${GHOSTTY_FORK_UPSTREAM_REMOTE:-origin}"
+UPSTREAM_REF="${GHOSTTY_FORK_UPSTREAM_REF:-main}"
+LIB="${GHOSTTY_FORK_PREFIX:-$HOME/.local/lib/ghostty-fork}"
+BIN="${GHOSTTY_FORK_BIN:-$HOME/.local/bin/ghostty}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-fork"
+NOTIFY_TO="${GHOSTTY_FORK_NOTIFY_TO:-195550206}"
+KEEP_BUILDS=3
+RESOLVE_UNIT=ghostty-fork-resolve
+RESOLVER=(agent run -p personal omp --auto-approve -p)
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+DESKTOP="$DATA/applications/com.mitchellh.ghostty.desktop"
+# Unit-test filters that cover the fork's patches (plus the C header parity check).
+TESTS=(SplitTree "plan:" "layout:" procinfo ctl "skill:" CreatedIds ghostty.h execCommand)
+
+log() { printf 'ghostty-fork: %s\n' "$*" >&2; }
+
+notify() {
+	log "$1"
+	command -v agent-notify >/dev/null || return 0
+	agent-notify send --backend telegram-bot --markdown --to "$NOTIFY_TO" "*ghostty-fork*: $1" >/dev/null 2>&1 ||
+		log "notification failed"
+}
+
+die() {
+	notify "$1"
+	exit 1
+}
+
+git_() { git -C "$REPO" "$@"; }
+
+zig_() {
+	local v
+	v=$(grep -oP '\.minimum_zig_version = "\K[^"]+' "$REPO/build.zig.zon")
+	(cd "$REPO" && mise exec "zig@$v" -- zig "$@")
+}
+
+upstream() { printf '%s/%s' "$UPSTREAM" "$UPSTREAM_REF"; }
+current() { readlink -f "$LIB/current" 2>/dev/null || true; }
+installed_build() { local c; c=$(current); [[ -n "$c" ]] && basename "$c" || true; }
+build_id() {
+	printf '%s-%s' "$(grep -oP '\.version = "\K[^"]+' "$REPO/build.zig.zon")" "$(git_ rev-parse --short=10 "${1:-HEAD}")"
+}
+
+run_tests() {
+	local t
+	for t in "${TESTS[@]}"; do
+		zig_ build test -Dtest-filter="$t" >&2 || { log "tests failed: $t"; return 1; }
+	done
+}
+
+# Builds the checked-out tree, validates it and installs it. Prints the build id.
+build_and_install() {
+	local id=$1 dest tmp
+	dest="$LIB/$id"
+	if [[ ! -x "$dest/bin/ghostty" ]]; then
+		tmp="$dest.tmp"
+		rm -rf "$tmp"
+		zig_ build -Doptimize=ReleaseFast -p "$tmp" >&2 || { rm -rf "$tmp"; return 1; }
+		"$tmp/bin/ghostty" --version >/dev/null || { rm -rf "$tmp"; return 1; }
+		"$tmp/bin/ghostty" +validate-config >/dev/null 2>&1 ||
+			log "warning: your config does not validate with this build ($tmp/bin/ghostty +validate-config)"
+		mv -T "$tmp" "$dest" || return 1
+	fi
+	activate "$dest" || return 1
+	printf '%s\n' "$id"
+}
+
+# Point every stable path at build $1.
+activate() {
+	local dest=$1
+	mkdir -p "$LIB" "$(dirname "$BIN")" "$STATE_DIR" || return 1
+	ln -sfn "$dest" "$LIB/current.tmp" && mv -Tf "$LIB/current.tmp" "$LIB/current" || return 1
+	ln -sfn "$LIB/current/bin/ghostty" "$BIN.tmp" && mv -Tf "$BIN.tmp" "$BIN" || return 1
+	integrate || return 1
+	"$BIN" +ctl skill install --agent=omp >/dev/null || log "warning: installing the ghostty-ctl skill failed"
+	install -m 0755 "$REPO/fork/ghostty-fork" "$HOME/.local/bin/ghostty-fork.tmp" &&
+		mv -f "$HOME/.local/bin/ghostty-fork.tmp" "$HOME/.local/bin/ghostty-fork" || return 1
+	prune
+	printf 'build=%s\ncommit=%s\ninstalled_at=%s\n' "$(basename "$dest")" "$(git_ rev-parse HEAD)" "$(date -Is)" \
+		>"$STATE_DIR/state"
+}
+
+# Desktop integration a distro package would provide, against the stable paths.
+integrate() {
+	local cur="$LIB/current/share" f
+	mkdir -p "$DATA/applications" "$DATA/dbus-1/services" "$HOME/.config/systemd/user" \
+		"$DATA/fish/vendor_completions.d" "$DATA/bash-completion/completions" "$DATA/zsh/site-functions" || return 1
+	# Keep a hand-written override's flags (e.g. --gtk-single-instance=false); only
+	# repoint its executable. Otherwise install the build's own entry.
+	if [[ -f "$DESKTOP" ]] && ! grep -q '^# Generated by ghostty-fork' "$DESKTOP"; then
+		sed -i -E "s#^(TryExec|Exec)=(/usr/bin/ghostty|ghostty)( |\$)#\1=$BIN\3#" "$DESKTOP"
+	else
+		sed -E "s#^(TryExec|Exec)=ghostty( |\$)#\1=$BIN\2#; 1a # Generated by ghostty-fork; overwritten on install." \
+			"$cur/applications/com.mitchellh.ghostty.desktop" >"$DESKTOP"
+	fi
+	sed -E "s#^Exec=ghostty#Exec=$BIN#" "$cur/dbus-1/services/com.mitchellh.ghostty.service" \
+		>"$DATA/dbus-1/services/com.mitchellh.ghostty.service"
+	sed -E "s#^ExecStart=ghostty#ExecStart=$BIN#" "$cur/systemd/user/app-com.mitchellh.ghostty.service" \
+		>"$HOME/.config/systemd/user/app-com.mitchellh.ghostty.service"
+	systemctl --user daemon-reload 2>/dev/null || true
+	while read -r f; do
+		mkdir -p "$DATA/icons/$(dirname "$f")"
+		ln -sfn "$cur/icons/$f" "$DATA/icons/$f"
+	done < <(cd "$cur/icons" && find . -type f -printf '%P\n')
+	ln -sfn "$cur/fish/vendor_completions.d/ghostty.fish" "$DATA/fish/vendor_completions.d/ghostty.fish"
+	ln -sfn "$cur/bash-completion/completions/ghostty.bash" "$DATA/bash-completion/completions/ghostty"
+	ln -sfn "$cur/zsh/site-functions/_ghostty" "$DATA/zsh/site-functions/_ghostty"
+	if command -v kbuildsycoca6 >/dev/null; then kbuildsycoca6 >/dev/null 2>&1 || true; fi
+}
+
+# Build dirs a running Ghostty executes from.
+in_use() {
+	local p exe
+	for p in /proc/[0-9]*; do
+		exe=$(readlink "$p/exe" 2>/dev/null) || continue
+		[[ "$exe" == "$LIB"/*/bin/ghostty* ]] && printf '%s\n' "${exe%/bin/ghostty*}"
+	done | sort -u
+}
+
+# Keep the newest builds, the current one and any a running Ghostty still uses.
+prune() {
+	local cur used old
+	cur=$(current)
+	used=$(in_use)
+	find "$LIB" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' -printf '%T@ %p\n' | sort -rn |
+		tail -n +$((KEEP_BUILDS + 1)) | cut -d' ' -f2- | while read -r old; do
+		[[ "$old" == "$cur" ]] && continue
+		grep -qxF "$old" <<<"$used" && continue
+		rm -rf "$old"
+	done
+}
+
+require_clean() {
+	[[ -z "$(git_ status --porcelain --untracked-files=no)" ]] || die "$REPO has uncommitted changes; not touching it"
+	[[ "$(git_ branch --show-current)" == "$BRANCH" ]] || die "$REPO is not on $BRANCH"
+}
+
+cmd_update() {
+	require_clean
+	git_ fetch -q "$UPSTREAM" || die "fetching $UPSTREAM failed"
+	local target base id
+	target=$(git_ rev-parse "$(upstream)")
+	base=$(git_ merge-base "$BRANCH" "$target")
+	if [[ "$base" == "$target" && "$(installed_build)" == "$(build_id "$BRANCH")" ]]; then
+		log "up to date: $(installed_build) on $(upstream) $(git_ rev-parse --short "$target")"
+		return 0
+	fi
+
+	git_ checkout -q --detach "$BRANCH"
+	if [[ "$base" != "$target" ]]; then
+		log "rebasing $BRANCH onto $(upstream) $(git_ rev-parse --short "$target")"
+		if ! git_ rebase -q --empty=drop --onto "$target" "$base"; then
+			git_ rebase --abort || true
+			git_ checkout -q "$BRANCH"
+			start_resolver "$target"
+			exit 1
+		fi
+	fi
+
+	if ! run_tests || ! id=$(build_and_install "$(build_id)"); then
+		git_ checkout -q -f "$BRANCH"
+		die "testing/building $(upstream) $(git_ rev-parse --short "$target") + patches failed; still running $(installed_build)"
+	fi
+	git_ checkout -q -B "$BRANCH"
+	if [[ "$base" != "$target" ]]; then
+		notify "installed ghostty $id ($(upstream) $(git_ rev-parse --short "$target") + $(git_ rev-list --count "$target..$BRANCH") patches); relaunch Ghostty to use it"
+	else
+		log "installed ghostty $id"
+	fi
+}
+
+# Hands a conflicting rebase to an agent in a transient unit, so this run (and its
+# lock, which the agent's own `ghostty-fork update` needs) ends right away. Each
+# upstream commit is attempted once: a failed attempt waits for a human or new commits.
+start_resolver() {
+	local target=$1 marker="$STATE_DIR/resolve-target" args=() var
+	if [[ "$(cat "$marker" 2>/dev/null)" == "$target" ]]; then
+		die "rebasing the patches onto $(upstream) ${target:0:10} conflicts and the agent already tried; resolve by hand in $REPO (still running $(installed_build))"
+	fi
+	printf '%s\n' "$target" >"$marker"
+	for var in PATH XDG_STATE_HOME ${!GHOSTTY_FORK_@}; do
+		[[ -n "${!var:-}" ]] && args+=("--setenv=$var=${!var}")
+	done
+	if systemd-run --user --quiet --collect --unit="$RESOLVE_UNIT" --property=RuntimeMaxSec=3h \
+		--property=Nice=10 "${args[@]}" -- "$(readlink -f "$0")" resolve "$target"; then
+		notify "rebasing the patches onto $(upstream) ${target:0:10} conflicts; an agent is resolving it (journalctl --user -u $RESOLVE_UNIT); still running $(installed_build)"
+	else
+		rm -f "$marker"
+		die "rebasing the patches onto $(upstream) ${target:0:10} conflicts and the agent could not start; resolve by hand in $REPO (still running $(installed_build))"
+	fi
+}
+
+resolve_prompt() {
+	local target=$1 base
+	base=$(git_ merge-base "$BRANCH" "$target")
+	cat <<-EOF
+	ghostty-fork (our Ghostty fork updater, script $REPO/fork/ghostty-fork, docs $REPO/fork/README.md) failed to rebase branch $BRANCH from ${base:0:10} onto upstream $(upstream) ${target:0:10}: the rebase conflicts. Read memory/ghostty-fork.md and $REPO/AGENTS.md first. Resolve it end to end, unattended:
+
+	1. In $REPO, on a detached HEAD exactly like the script: git checkout --detach $BRANCH && git rebase --empty=drop --onto $target $base
+	2. Resolve every conflict by understanding what upstream changed (git log/diff $base..$target on the conflicting files) and what our patch intends (git log $base..$BRANCH). Keep upstream's design and re-express our patch on top of it; never drop a patch's behavior to get a clean merge. Where upstream changed an API our patch relies on, adapt call sites and tests. Typical spots: include/ghostty.h and src/apprt/action.zig action enums (keep upstream's order, append ours), src/apprt/gtk/class/{application,surface,split_tree,window,tab}.zig, src/apprt/gtk.zig test imports.
+	3. Toolchain: mise exec zig@\$(grep -oP '\.minimum_zig_version = "\K[^"]+' build.zig.zon) -- zig. After the rebase: zig build, then zig build test -Dtest-filter=X for each of: ${TESTS[*]}. All must pass.
+	4. Only GUI-test on the throwaway display :9 inside dbus-run-session --config-file=/home/tony/projects/home/ghostty/fork/test-bus.conf with --class=dev.tony.ghostty-<name>; NEVER touch Tony's running Ghostty, its bus name com.mitchellh.ghostty, or display :0.
+	5. Finish with: git checkout -B $BRANCH && ghostty-fork update. It tests, builds and installs; it must log "installed ghostty".
+	6. If upstream changed the fork in a way future rebases should know, add a short dated line to memory/ghostty-fork.md.
+
+	If you cannot resolve it correctly, run git rebase --abort && git checkout $BRANCH in $REPO so the worktree is clean, and explain why. End your reply with a summary of each conflict and how you resolved it.
+	EOF
+}
+
+# Runs inside $RESOLVE_UNIT; reports the outcome from the repo state, not the agent's word.
+cmd_resolve() {
+	local target=${1:?usage: ghostty-fork resolve REF} status=0
+	export GHOSTTY_FORK_RESOLVING=1
+	"${RESOLVER[@]}" "$(resolve_prompt "$target")" || status=$?
+	if [[ "$(git_ branch --show-current)" == "$BRANCH" && -z "$(git_ status --porcelain --untracked-files=no)" ]] &&
+		git_ merge-base --is-ancestor "$target" "$BRANCH" && [[ "$(installed_build)" == "$(build_id "$BRANCH")" ]]; then
+		notify "the agent rebased onto $(upstream) ${target:0:10} and installed ghostty $(installed_build) ($(git_ rev-list --count "$target..$BRANCH") patches); relaunch Ghostty to use it"
+	else
+		die "the agent did not finish rebasing onto $(upstream) ${target:0:10} (exit $status); resolve by hand in $REPO (journalctl --user -u $RESOLVE_UNIT; still running $(installed_build))"
+	fi
+}
+
+cmd_install() {
+	local id
+	if [[ "${1:-}" == --dirty ]]; then
+		id="$(build_id)-dirty-$(date +%Y%m%d%H%M%S)"
+	else
+		require_clean
+		id=$(build_id)
+	fi
+	id=$(build_and_install "$id") || die "building $id failed; still running $(installed_build)"
+	log "installed ghostty $id; relaunch Ghostty to use it"
+}
+
+cmd_rollback() {
+	local cur prev
+	cur=$(current)
+	prev=$(find "$LIB" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' -printf '%T@ %p\n' | sort -rn |
+		cut -d' ' -f2- | grep -vxF "$cur" | head -1 || true)
+	[[ -n "$prev" ]] || die "no previous build to roll back to"
+	activate "$prev"
+	log "rolled back to $(basename "$prev"); relaunch Ghostty to use it"
+}
+
+cmd_status() {
+	local cur used p exe d base
+	cur=$(current)
+	used=$(in_use)
+	base=$(git_ merge-base "$BRANCH" "$(upstream)" 2>/dev/null || true)
+	printf 'installed: %s -> %s\n' "$(installed_build)" "$(readlink -f "$BIN" 2>/dev/null || echo none)"
+	printf 'branch:    %s on %s %s (%s)\n' "$BRANCH" "$(upstream)" "${base:0:10}" "$REPO"
+	[[ -n "$base" ]] && git_ log --format='  %h %s' "$base..$BRANCH"
+	printf 'upstream:  %s commits not in the branch yet (as of the last fetch)\n' \
+		"$(git_ rev-list --count "$BRANCH..$(upstream)" 2>/dev/null || echo '?')"
+	echo "builds:"
+	while read -r d; do
+		printf '  %s%s%s\n' "$(basename "$d")" "$([[ "$d" == "$cur" ]] && echo '  [current]')" \
+			"$(grep -qxF "$d" <<<"$used" && echo '  [running]')"
+	done < <(find "$LIB" -mindepth 1 -maxdepth 1 -type d ! -name '*.tmp' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+	echo "running ghostty processes:"
+	for p in /proc/[0-9]*; do
+		exe=$(readlink "$p/exe" 2>/dev/null) || continue
+		[[ "$(basename "${exe% (deleted)}")" == ghostty ]] || continue
+		printf '  pid %-8s %s%s\n' "${p#/proc/}" "$exe" "$([[ "${exe%/bin/ghostty*}" == "$cur" ]] || echo '  <- relaunch to update')"
+	done
+}
+
+cmd_setup() {
+	local units="$HOME/.config/systemd/user"
+	install -Dm 0755 "$REPO/fork/ghostty-fork" "$HOME/.local/bin/ghostty-fork"
+	install -Dm 0644 "$REPO/fork/systemd/ghostty-fork.service" "$units/ghostty-fork.service"
+	install -Dm 0644 "$REPO/fork/systemd/ghostty-fork.timer" "$units/ghostty-fork.timer"
+	[[ -n "$(current)" ]] && integrate
+	systemctl --user daemon-reload
+	systemctl --user enable ghostty-fork.timer
+	systemctl --user restart ghostty-fork.timer
+}
+
+main() {
+	local cmd=${1:-help}
+	case "$cmd" in
+	update | install | rollback)
+		mkdir -p "$STATE_DIR"
+		# While the agent works, the repo sits mid-rebase; only its own runs may touch it.
+		if [[ -z "${GHOSTTY_FORK_RESOLVING:-}" ]] && systemctl --user -q is-active "$RESOLVE_UNIT" 2>/dev/null; then
+			log "an agent is resolving a rebase conflict ($RESOLVE_UNIT); skipping"
+			exit 0
+		fi
+		exec 9>"$STATE_DIR/lock"
+		flock -n 9 || { log "another ghostty-fork run holds the lock"; exit 0; }
+		"cmd_$cmd" "${@:2}"
+		;;
+	resolve) cmd_resolve "${@:2}" ;;
+	status | setup) "cmd_$cmd" ;;
+	*) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; [[ "$cmd" == help || "$cmd" == -h || "$cmd" == --help ]] ;;
+	esac
+}
+
+main "$@"

@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically rebuild the Ghostty fork
+
+[Timer]
+# Calendar + Persistent: catches up a slot missed while the machine was off.
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30min
+Persistent=true
+Unit=ghostty-fork.service
+
+[Install]
+WantedBy=timers.target
