@@ -27,7 +27,8 @@ The desktop entry (a hand-written override keeps its flags), D-Bus service, syst
 icons and shell completions point at those stable paths, so a relaunched Ghostty runs the new
 build and open windows keep theirs.
 
-`ghostty-fork.timer` runs `update` daily at 04:00. A rebase conflict starts an agent
+`ghostty-fork.timer` runs `update` daily at 04:00; a successful update force-pushes the branch to
+the `fork` remote (github.com/tonybart1337/ghostty). A rebase conflict starts an agent
 (`agent run -p personal omp`) in the transient unit `ghostty-fork-resolve` once per upstream
 commit; results and failures go to Telegram via `agent-notify`.
 
