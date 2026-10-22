@@ -38,6 +38,8 @@ DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 DESKTOP="$DATA/applications/com.mitchellh.ghostty.desktop"
 # Unit-test filters that cover the fork's patches (plus the C header parity check).
 TESTS=(SplitTree "plan:" "layout:" procinfo ctl "skill:" CreatedIds ghostty.h execCommand)
+# Link the font stack and codecs from the system, like Arch's package (see build_and_install).
+SYS_LIBS=(-fsys=fontconfig -fsys=freetype -fsys=harfbuzz -fsys=libpng -fsys=zlib -fsys=oniguruma)
 
 log() { printf 'ghostty-fork: %s\n' "$*" >&2; }
 
@@ -64,8 +66,9 @@ zig_() {
 upstream() { printf '%s/%s' "$UPSTREAM" "$UPSTREAM_REF"; }
 current() { readlink -f "$LIB/current" 2>/dev/null || true; }
 installed_build() { local c; c=$(current); [[ -n "$c" ]] && basename "$c" || true; }
+# `-sys`: linked against SYS_LIBS (older builds bundled them, so never reuse those).
 build_id() {
-	printf '%s-%s' "$(grep -oP '\.version = "\K[^"]+' "$REPO/build.zig.zon")" "$(git_ rev-parse --short=10 "${1:-HEAD}")"
+	printf '%s-%s-sys' "$(grep -oP '\.version = "\K[^"]+' "$REPO/build.zig.zon")" "$(git_ rev-parse --short=10 "${1:-HEAD}")"
 }
 
 run_tests() {
@@ -82,7 +85,11 @@ build_and_install() {
 	if [[ ! -x "$dest/bin/ghostty" ]]; then
 		tmp="$dest.tmp"
 		rm -rf "$tmp"
-		zig_ build -Doptimize=ReleaseFast -p "$tmp" >&2 || { rm -rf "$tmp"; return 1; }
+		# System libraries, as Arch's package links them. The bundled fontconfig
+		# (2.14) exports its symbols, so GTK/Pango calls land in it too, and it
+		# reads caches written by the system's newer fontconfig: Ghostty
+		# segfaulted in FcFontSort with several windows in one process.
+		zig_ build -Doptimize=ReleaseFast "${SYS_LIBS[@]}" -p "$tmp" >&2 || { rm -rf "$tmp"; return 1; }
 		"$tmp/bin/ghostty" --version >/dev/null || { rm -rf "$tmp"; return 1; }
 		"$tmp/bin/ghostty" +validate-config >/dev/null 2>&1 ||
 			log "warning: your config does not validate with this build ($tmp/bin/ghostty +validate-config)"
