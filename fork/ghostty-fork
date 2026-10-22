@@ -16,16 +16,17 @@
 # stable paths, so an install is a symlink flip: relaunching Ghostty runs the new build,
 # open windows keep theirs until closed.
 #
-# The rebase runs on a detached HEAD; the branch only moves after the new build passed
-# its tests and is installed. Any failure leaves the installed build and the branch
-# untouched and sends a notification. A rebase conflict starts an agent (once per
-# upstream commit) in the transient unit ghostty-fork-resolve to redo the rebase by
-# hand and finish with `ghostty-fork update`.
+# The rebase runs on a detached HEAD; the branch only moves (and is pushed to the `fork`
+# remote) after the new build passed its tests and is installed. Any failure leaves the
+# installed build and the branch untouched and sends a notification. A rebase conflict
+# starts an agent (once per upstream commit) in the transient unit ghostty-fork-resolve
+# to redo the rebase by hand and finish with `ghostty-fork update`.
 set -euo pipefail
 
 REPO="${GHOSTTY_FORK_REPO:-$HOME/projects/home/ghostty}"
 BRANCH="${GHOSTTY_FORK_BRANCH:-tony/control-api}"
 UPSTREAM="${GHOSTTY_FORK_UPSTREAM_REMOTE:-origin}"
+FORK="${GHOSTTY_FORK_PUSH_REMOTE:-fork}" # github.com/tonybart1337/ghostty; gets the branch after each update
 UPSTREAM_REF="${GHOSTTY_FORK_UPSTREAM_REF:-main}"
 LIB="${GHOSTTY_FORK_PREFIX:-$HOME/.local/lib/ghostty-fork}"
 BIN="${GHOSTTY_FORK_BIN:-$HOME/.local/bin/ghostty}"
@@ -196,6 +197,7 @@ cmd_update() {
 		die "testing/building $(upstream) $(git_ rev-parse --short "$target") + patches failed; still running $(installed_build)"
 	fi
 	git_ checkout -q -B "$BRANCH"
+	git_ push -q --force-with-lease "$FORK" "$BRANCH" || log "pushing $BRANCH to $FORK failed"
 	if [[ "$base" != "$target" ]]; then
 		notify "installed ghostty $id ($(upstream) $(git_ rev-parse --short "$target") + $(git_ rev-list --count "$target..$BRANCH") patches); relaunch Ghostty to use it"
 	else
