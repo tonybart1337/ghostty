@@ -19,8 +19,10 @@ ghostty-fork status         # installed build, patches, which Ghostty processes 
 ghostty-fork rollback       # previous build
 ```
 
-Builds live in `~/.local/lib/ghostty-fork/<version>-<sha>/` (`zig build -p` prefixes, the last
+Builds live in `~/.local/lib/ghostty-fork/<version>-<sha>-sys/` (`zig build -p` prefixes, the last
 three kept plus any still running); `current` and `~/.local/bin/ghostty` point at the active one.
+They link fontconfig, freetype, harfbuzz, libpng, zlib and oniguruma from the system, as Arch's
+package does: the bundled fontconfig crashed a single-instance Ghostty in `FcFontSort`.
 The desktop entry (a hand-written override keeps its flags), D-Bus service, systemd user unit,
 icons and shell completions point at those stable paths, so a relaunched Ghostty runs the new
 build and open windows keep theirs.
