@@ -34,7 +34,8 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-fork"
 NOTIFY_TO="${GHOSTTY_FORK_NOTIFY_TO:-195550206}"
 KEEP_BUILDS=3
 RESOLVE_UNIT=ghostty-fork-resolve
-RESOLVER=(agent run -p personal omp --auto-approve -p)
+# The `system` profile shares personal's workspace and memory but is never notified.
+RESOLVER=(agent run -p system omp --auto-approve -p)
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
 DESKTOP="$DATA/applications/com.mitchellh.ghostty.desktop"
 # Unit-test filters that cover the fork's patches (plus the C header parity check).
